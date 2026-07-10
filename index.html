@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chromatic Circle</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --ink: #e6edf3;
+    --muted: #7d8590;
+    --accent: #ffb454;
+    --ring: #30363d;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    background: radial-gradient(circle at 50% 0%, #1b2430, var(--bg) 70%);
+    color: var(--ink);
+    font-family: "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 32px 20px 60px;
+    text-align: center;
+  }
+  h1 {
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin: 0 0 4px;
+    font-size: 1.6rem;
+  }
+  p.sub { color: var(--muted); margin: 0 0 24px; font-size: 0.95rem; }
+
+  .stage { position: relative; width: min(90vw, 480px); aspect-ratio: 1; margin: 0 auto; }
+  svg { width: 100%; height: 100%; overflow: visible; }
+
+  .note {
+    cursor: pointer;
+    transition: transform 0.15s ease;
+  }
+  .note .disc {
+    fill: var(--panel);
+    stroke: var(--ring);
+    stroke-width: 1.5;
+    transition: fill 0.2s, stroke 0.2s;
+  }
+  .note .name { fill: var(--ink); font-weight: 600; font-size: 15px; }
+  .note .ivl  { fill: var(--muted); font-size: 9px; letter-spacing: 0.03em; }
+
+  .note:hover .disc { stroke: var(--accent); }
+  .note:hover { transform: scale(1.04); transform-origin: center; }
+
+  .note.root .disc { fill: var(--accent); stroke: var(--accent); }
+  .note.root .name { fill: #1a1200; }
+  .note.root .ivl  { fill: #5a3d00; }
+
+  .center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .center .label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.15em; }
+  .center .root  { font-size: 2.4rem; font-weight: 700; color: var(--accent); line-height: 1; }
+
+  .controls { margin-top: 28px; display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+  select, button {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--ring);
+    border-radius: 8px;
+    padding: 9px 14px;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  select:hover, button:hover { border-color: var(--accent); }
+  label.ctl { color: var(--muted); font-size: 0.9rem; }
+  .toggle input { accent-color: var(--accent); }
+  footer { margin-top: 40px; color: var(--muted); font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Chromatic Circle</h1>
+  <p class="sub">Twelve semitones. Click a note to set the root.</p>
+
+  <div class="stage">
+    <svg id="circle" viewBox="-160 -160 320 320" aria-label="Chromatic circle"></svg>
+    <div class="center">
+      <span class="label">Root</span>
+      <span class="root" id="rootDisplay">C</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label class="ctl" for="rootSelect">Root</label>
+    <select id="rootSelect"></select>
+    <label class="ctl toggle"><input type="checkbox" id="soundToggle" checked> Sound</label>
+    <button id="flatsBtn">♭ Flats</button>
+  </div>
+
+  <footer>Intervals shown relative to the root · built with the Web Audio API</footer>
+</div>
+
+<script>
+(function () {
+  const SHARPS = ["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
+  const FLATS  = ["C","D♭","D","E♭","E","F","G♭","G","A♭","A","B♭","B"];
+  const INTERVALS = ["R","♭2","2","♭3","3","4","♭5","5","♭6","6","♭7","7"];
+  const A4 = 440; // Hz, MIDI 69
+
+  let useFlats = false;
+  let root = 0;             // 0..11, index of root pitch class
+  let soundOn = true;
+
+  const svg = document.getElementById("circle");
+  const rootDisplay = document.getElementById("rootDisplay");
+  const rootSelect = document.getElementById("rootSelect");
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const R = 118;            // radius of note ring
+
+  function names() { return useFlats ? FLATS : SHARPS; }
+
+  function buildSelect() {
+    rootSelect.innerHTML = "";
+    names().forEach((n, i) => {
+      const o = document.createElement("option");
+      o.value = i; o.textContent = n;
+      rootSelect.appendChild(o);
+    });
+    rootSelect.value = root;
+  }
+
+  function freqFor(pc) {
+    // pick the octave near middle: MIDI 60 (C4) .. 71, then A4=440 reference
+    const midi = 60 + pc;
+    return A4 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  let audioCtx = null;
+  function play(pc) {
+    if (!soundOn) return;
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      const t = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = freqFor(pc);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.95);
+    } catch (e) { /* audio not available */ }
+  }
+
+  function render() {
+    svg.innerHTML = "";
+    const nm = names();
+    for (let i = 0; i < 12; i++) {
+      // clockwise, C at top (12 o'clock)
+      const angle = (i / 12) * 2 * Math.PI - Math.PI / 2;
+      const x = R * Math.cos(angle);
+      const y = R * Math.sin(angle);
+      const interval = INTERVALS[(i - root + 12) % 12];
+
+      const g = document.createElementNS(SVGNS, "g");
+      g.setAttribute("class", "note" + (i === root ? " root" : ""));
+      g.setAttribute("transform", `translate(${x.toFixed(2)},${y.toFixed(2)})`);
+      g.setAttribute("role", "button");
+      g.setAttribute("tabindex", "0");
+      g.setAttribute("aria-label", nm[i] + ", interval " + interval);
+
+      const disc = document.createElementNS(SVGNS, "circle");
+      disc.setAttribute("class", "disc");
+      disc.setAttribute("r", "26");
+      g.appendChild(disc);
+
+      const name = document.createElementNS(SVGNS, "text");
+      name.setAttribute("class", "name");
+      name.setAttribute("text-anchor", "middle");
+      name.setAttribute("y", "1");
+      name.textContent = nm[i];
+      g.appendChild(name);
+
+      const ivl = document.createElementNS(SVGNS, "text");
+      ivl.setAttribute("class", "ivl");
+      ivl.setAttribute("text-anchor", "middle");
+      ivl.setAttribute("y", "14");
+      ivl.textContent = interval;
+      g.appendChild(ivl);
+
+      const setRoot = () => { root = i; update(); play(i); };
+      g.addEventListener("click", setRoot);
+      g.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setRoot(); }
+      });
+
+      svg.appendChild(g);
+    }
+  }
+
+  function update() {
+    rootDisplay.textContent = names()[root];
+    rootSelect.value = root;
+    render();
+  }
+
+  rootSelect.addEventListener("change", () => { root = +rootSelect.value; update(); play(root); });
+  document.getElementById("soundToggle").addEventListener("change", (e) => { soundOn = e.target.checked; });
+  document.getElementById("flatsBtn").addEventListener("click", () => {
+    useFlats = !useFlats;
+    document.getElementById("flatsBtn").textContent = useFlats ? "♯ Sharps" : "♭ Flats";
+    buildSelect(); update();
+  });
+
+  buildSelect();
+  update();
+})();
+</script>
+</body>
+</html>
