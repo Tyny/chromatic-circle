@@ -39,21 +39,17 @@
   .stage { position: relative; width: min(90vw, 480px); aspect-ratio: 1; margin: 0 auto; }
   svg { width: 100%; height: 100%; overflow: visible; }
 
-  .note {
-    cursor: pointer;
-    transition: transform 0.15s ease;
-  }
+  .note { cursor: pointer; }
   .note .disc {
     fill: var(--panel);
     stroke: var(--ring);
     stroke-width: 1.5;
-    transition: fill 0.2s, stroke 0.2s;
+    transition: fill 0.2s;
   }
   .note .name { fill: var(--ink); font-weight: 600; font-size: 15px; }
   .note .ivl  { fill: var(--muted); font-size: 9px; letter-spacing: 0.03em; }
 
   .note:hover .disc { stroke: var(--accent); }
-  .note:hover { transform: scale(1.04); transform-origin: center; }
 
   .note.root .disc { fill: var(--accent); stroke: var(--accent); }
   .note.root .name { fill: #1a1200; }
@@ -125,6 +121,13 @@
   const SVGNS = "http://www.w3.org/2000/svg";
   const R = 118;            // radius of note ring
 
+  // built once; refs kept for updates
+  let ring = null;
+  const contents = [];      // inner group per note (counter-rotated to stay upright)
+  const noteGroups = [];
+  const nameTexts = [];
+  const ivlTexts = [];
+
   function names() { return useFlats ? FLATS : SHARPS; }
 
   function buildSelect() {
@@ -163,56 +166,100 @@
     } catch (e) { /* audio not available */ }
   }
 
-  function render() {
-    svg.innerHTML = "";
-    const nm = names();
+  function build() {
+    ring = document.createElementNS(SVGNS, "g");
+    ring.setAttribute("id", "ring");
+    svg.appendChild(ring);
+
     for (let i = 0; i < 12; i++) {
-      // clockwise, C at top (12 o'clock)
+      // fixed slot: index 0 at top (12 o'clock), clockwise
       const angle = (i / 12) * 2 * Math.PI - Math.PI / 2;
       const x = R * Math.cos(angle);
       const y = R * Math.sin(angle);
-      const interval = INTERVALS[(i - root + 12) % 12];
 
       const g = document.createElementNS(SVGNS, "g");
-      g.setAttribute("class", "note" + (i === root ? " root" : ""));
+      g.setAttribute("class", "note");
       g.setAttribute("transform", `translate(${x.toFixed(2)},${y.toFixed(2)})`);
       g.setAttribute("role", "button");
       g.setAttribute("tabindex", "0");
-      g.setAttribute("aria-label", nm[i] + ", interval " + interval);
+
+      // inner group counter-rotates against the ring so labels stay upright
+      const content = document.createElementNS(SVGNS, "g");
 
       const disc = document.createElementNS(SVGNS, "circle");
       disc.setAttribute("class", "disc");
       disc.setAttribute("r", "26");
-      g.appendChild(disc);
+      content.appendChild(disc);
 
       const name = document.createElementNS(SVGNS, "text");
       name.setAttribute("class", "name");
       name.setAttribute("text-anchor", "middle");
       name.setAttribute("y", "1");
-      name.textContent = nm[i];
-      g.appendChild(name);
+      content.appendChild(name);
 
       const ivl = document.createElementNS(SVGNS, "text");
       ivl.setAttribute("class", "ivl");
       ivl.setAttribute("text-anchor", "middle");
       ivl.setAttribute("y", "14");
-      ivl.textContent = interval;
-      g.appendChild(ivl);
+      content.appendChild(ivl);
+
+      g.appendChild(content);
+      ring.appendChild(g);
+
+      contents[i] = content;
+      noteGroups[i] = g;
+      nameTexts[i] = name;
+      ivlTexts[i] = ivl;
 
       const setRoot = () => { root = i; update(); play(i); };
       g.addEventListener("click", setRoot);
       g.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setRoot(); }
       });
-
-      svg.appendChild(g);
     }
   }
 
+  // --- spin animation ---------------------------------------------------
+  let currentRot = 0;       // current ring rotation, degrees
+  let fromRot = 0, toRot = 0, startT = 0, animating = false;
+  const DUR = 550;
+  const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+  function applyRotation(rot) {
+    ring.setAttribute("transform", `rotate(${rot.toFixed(2)})`);
+    const inv = (-rot).toFixed(2);
+    for (let i = 0; i < 12; i++) {
+      contents[i].setAttribute("transform", `rotate(${inv})`);
+    }
+  }
+  function frame(now) {
+    const t = Math.min(1, (now - startT) / DUR);
+    currentRot = fromRot + (toRot - fromRot) * easeInOut(t);
+    applyRotation(currentRot);
+    if (t < 1) requestAnimationFrame(frame);
+    else animating = false;
+  }
+  function spinRootToTop() {
+    const desired = -root * 30;                              // move root to 12 o'clock
+    let delta = ((desired - currentRot) % 360 + 540) % 360 - 180; // shortest way
+    fromRot = currentRot;
+    toRot = currentRot + delta;
+    startT = performance.now();
+    if (!animating) { animating = true; requestAnimationFrame(frame); }
+  }
+
   function update() {
-    rootDisplay.textContent = names()[root];
+    const nm = names();
+    for (let i = 0; i < 12; i++) {
+      const interval = INTERVALS[(i - root + 12) % 12];
+      nameTexts[i].textContent = nm[i];
+      ivlTexts[i].textContent = interval;
+      noteGroups[i].setAttribute("class", "note" + (i === root ? " root" : ""));
+      noteGroups[i].setAttribute("aria-label", nm[i] + ", interval " + interval);
+    }
+    rootDisplay.textContent = nm[root];
     rootSelect.value = root;
-    render();
+    spinRootToTop();
   }
 
   rootSelect.addEventListener("change", () => { root = +rootSelect.value; update(); play(root); });
@@ -223,7 +270,9 @@
     buildSelect(); update();
   });
 
+  build();
   buildSelect();
+  applyRotation(0);
   update();
 })();
 </script>
