@@ -101,7 +101,7 @@
     <button id="flatsBtn">♭ Flats</button>
   </div>
 
-  <footer>Intervals shown relative to the root · built with the Web Audio API</footer>
+  <footer>Shaded bands group the interval families — 2nds, 3rds, 6ths, 7ths (each a minor/major pair). The root, perfect 4th &amp; 5th and tritone are left unshaded.</footer>
 </div>
 
 <script>
@@ -110,6 +110,14 @@
   const FLATS  = ["C","D♭","D","E♭","E","F","G♭","G","A♭","A","B♭","B"];
   const INTERVALS = ["R","♭2","2","♭3","3","4","♭5","5","♭6","6","♭7","7"];
   const A4 = 440; // Hz, MIDI 69
+
+  // interval "color" families: each spans a minor/major pair of slots (relative to root)
+  const ZONES = [
+    { label: "2nds", slots: [1, 2],   color: "#3fb0d8" },
+    { label: "3rds", slots: [3, 4],   color: "#57c96a" },
+    { label: "6ths", slots: [8, 9],   color: "#b07cff" },
+    { label: "7ths", slots: [10, 11], color: "#ff7ba6" },
+  ];
 
   let useFlats = false;
   let root = 0;             // 0..11, index of root pitch class
@@ -166,7 +174,55 @@
     } catch (e) { /* audio not available */ }
   }
 
+  // polar -> cartesian, clock angle in degrees (0 = top, clockwise)
+  function polar(r, clockDeg) {
+    const a = (clockDeg - 90) * Math.PI / 180;
+    return [r * Math.cos(a), r * Math.sin(a)];
+  }
+  function sectorPath(a1, a2, ri, ro) {
+    const [ox1, oy1] = polar(ro, a1), [ox2, oy2] = polar(ro, a2);
+    const [ix2, iy2] = polar(ri, a2), [ix1, iy1] = polar(ri, a1);
+    const large = (a2 - a1) > 180 ? 1 : 0;
+    return `M${ox1.toFixed(2)},${oy1.toFixed(2)} ` +
+           `A${ro},${ro} 0 ${large} 1 ${ox2.toFixed(2)},${oy2.toFixed(2)} ` +
+           `L${ix2.toFixed(2)},${iy2.toFixed(2)} ` +
+           `A${ri},${ri} 0 ${large} 0 ${ix1.toFixed(2)},${iy1.toFixed(2)} Z`;
+  }
+
+  function buildZones() {
+    const layer = document.createElementNS(SVGNS, "g");
+    layer.setAttribute("id", "zones");
+    svg.appendChild(layer); // added first -> sits behind the notes
+
+    ZONES.forEach((z) => {
+      const a1 = z.slots[0] * 30 - 15;
+      const a2 = z.slots[z.slots.length - 1] * 30 + 15;
+
+      const band = document.createElementNS(SVGNS, "path");
+      band.setAttribute("d", sectorPath(a1, a2, 90, 148));
+      band.setAttribute("fill", z.color);
+      band.setAttribute("fill-opacity", "0.16");
+      layer.appendChild(band);
+
+      const mid = (a1 + a2) / 2;
+      const [lx, ly] = polar(60, mid);
+      const t = document.createElementNS(SVGNS, "text");
+      t.setAttribute("x", lx.toFixed(2));
+      t.setAttribute("y", ly.toFixed(2));
+      t.setAttribute("text-anchor", "middle");
+      t.setAttribute("dominant-baseline", "middle");
+      t.setAttribute("fill", z.color);
+      t.setAttribute("font-size", "11");
+      t.setAttribute("font-weight", "600");
+      t.setAttribute("opacity", "0.9");
+      t.textContent = z.label;
+      layer.appendChild(t);
+    });
+  }
+
   function build() {
+    buildZones();
+
     ring = document.createElementNS(SVGNS, "g");
     ring.setAttribute("id", "ring");
     svg.appendChild(ring);
