@@ -39,7 +39,7 @@
   .stage { position: relative; width: min(90vw, 480px); aspect-ratio: 1; margin: 0 auto; }
   svg { width: 100%; height: 100%; overflow: visible; }
 
-  .note { cursor: pointer; }
+  .note { cursor: pointer; user-select: none; touch-action: manipulation; }
   .note .disc {
     fill: var(--panel);
     stroke: var(--ring);
@@ -84,7 +84,7 @@
 <body>
 <div class="wrap">
   <h1>Chromatic Circle</h1>
-  <p class="sub">Twelve semitones. Click a note to set the root.</p>
+  <p class="sub">Twelve semitones. Tap a note to hear it above the root; double-tap to make it the new root.</p>
 
   <div class="stage">
     <svg id="circle" viewBox="-160 -160 320 320" aria-label="Chromatic circle"></svg>
@@ -128,6 +128,7 @@
   const rootSelect = document.getElementById("rootSelect");
   const SVGNS = "http://www.w3.org/2000/svg";
   const R = 118;            // radius of note ring
+  const TAP_GRACE = 250;    // ms a single tap waits to see if a double follows
 
   // built once; refs kept for updates
   let ring = null;
@@ -149,8 +150,9 @@
   }
 
   function freqFor(pc) {
-    // pick the octave near middle: MIDI 60 (C4) .. 71, then A4=440 reference
-    const midi = 60 + pc;
+    // the root anchors the octave; every other note sounds above it, so the
+    // interval you hear matches the interval label (0..11 semitones up)
+    const midi = 60 + root + ((pc - root + 12) % 12);
     return A4 * Math.pow(2, (midi - 69) / 12);
   }
 
@@ -268,9 +270,23 @@
       ivlTexts[i] = ivl;
 
       const setRoot = () => { root = i; update(); play(i); };
-      g.addEventListener("click", setRoot);
+
+      // single tap sounds the note above the centre; double tap re-centres.
+      // the click is held back briefly so a double tap doesn't also sound it.
+      let pending = null;
+      g.addEventListener("click", () => {
+        if (pending) return;
+        pending = setTimeout(() => { pending = null; play(i); }, TAP_GRACE);
+      });
+      g.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        clearTimeout(pending); pending = null;
+        setRoot();
+      });
       g.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setRoot(); }
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        if (e.shiftKey) setRoot(); else play(i);
       });
     }
   }
@@ -311,7 +327,9 @@
       nameTexts[i].textContent = nm[i];
       ivlTexts[i].textContent = interval;
       noteGroups[i].setAttribute("class", "note" + (i === root ? " root" : ""));
-      noteGroups[i].setAttribute("aria-label", nm[i] + ", interval " + interval);
+      noteGroups[i].setAttribute("aria-label",
+        nm[i] + ", interval " + interval + (i === root ? " (root)" : "") +
+        ". Enter to play, shift+Enter to set as root.");
     }
     rootDisplay.textContent = nm[root];
     rootSelect.value = root;
