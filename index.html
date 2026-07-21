@@ -115,6 +115,12 @@
   .qtoggle button + button { border-left: 1px solid var(--ring); }
   .qtoggle button.active { background: var(--accent); color: #1a1200; }
   .qtoggle button.active:hover { border-color: var(--ring); }
+  #chordBtn.active { background: var(--accent); color: #1a1200; border-color: var(--accent); }
+
+  /* chord-bloom dots (circle centred on the group's local origin) */
+  .burst-dot circle { fill: var(--accent); stroke: none; filter: drop-shadow(0 0 6px rgba(255, 180, 84, 0.6)); }
+  .burst-dot text { fill: #1a1200; font-weight: 700; font-size: 15px; }
+  .burst-dot.chord-root circle { fill: #ffd9a0; }
   .toggle input { accent-color: var(--accent); }
   footer { margin-top: 40px; color: var(--muted); font-size: 0.8rem; }
 </style>
@@ -122,7 +128,7 @@
 <body>
 <div class="wrap">
   <h1>Chromatic Circle</h1>
-  <p class="sub">Twelve semitones. Tap a note to hear it above the root; double-tap to make it the new root. Press <kbd>m</kbd> to toggle major/minor.</p>
+  <p class="sub">Twelve semitones. Tap a note to hear it above the root; double-tap to make it the new root. Press <kbd>m</kbd> for major/minor, <kbd>c</kbd> for chords.</p>
 
   <div class="stage">
     <svg id="circle" viewBox="-160 -160 320 320" aria-label="Chromatic circle"></svg>
@@ -140,6 +146,7 @@
       <button id="minBtn" data-q="minor">minor</button>
       <button id="majBtn" data-q="major">major</button>
     </div>
+    <button id="chordBtn" aria-pressed="false">Chords</button>
     <label class="ctl toggle"><input type="checkbox" id="soundToggle" checked> Sound</label>
     <button id="flatsBtn">♭ Flats</button>
   </div>
@@ -167,10 +174,16 @@
     major: [0, 2, 4, 5, 7, 9, 11],   // R 2 3 4 5 6 7
     minor: [0, 2, 3, 5, 7, 8, 10],   // R 2 ♭3 4 5 ♭6 ♭7 (natural minor)
   };
+  // triad built on the clicked note, using the current quality
+  const TRIADS = {
+    major: [0, 4, 7],                // R 3 5
+    minor: [0, 3, 7],                // R ♭3 5
+  };
 
   let useFlats = false;
   let root = 0;             // 0..11, index of root pitch class
   let quality = "major";    // "major" | "minor"; there is always one
+  let chordView = false;    // click plays a triad + blooms its 3 tones
   let soundOn = true;
 
   const svg = document.getElementById("circle");
@@ -179,12 +192,14 @@
   const rootSelect = document.getElementById("rootSelect");
   const minBtn = document.getElementById("minBtn");
   const majBtn = document.getElementById("majBtn");
+  const chordBtn = document.getElementById("chordBtn");
   const SVGNS = "http://www.w3.org/2000/svg";
   const R = 118;            // radius of note ring
   const TAP_GRACE = 250;    // ms a single tap waits to see if a double follows
 
   // built once; refs kept for updates
   let ring = null;
+  let burstLayer = null;
   const contents = [];      // inner group per note (counter-rotated to stay upright)
   const noteGroups = [];
   const nameTexts = [];
@@ -202,31 +217,44 @@
     rootSelect.value = root;
   }
 
-  function freqFor(pc) {
+  function midiFor(pc) {
     // the root anchors the octave; every other note sounds above it, so the
     // interval you hear matches the interval label (0..11 semitones up)
-    const midi = 60 + root + ((pc - root + 12) % 12);
-    return A4 * Math.pow(2, (midi - 69) / 12);
+    return 60 + root + ((pc - root + 12) % 12);
   }
+  function freqFromMidi(midi) { return A4 * Math.pow(2, (midi - 69) / 12); }
 
   let audioCtx = null;
+  function ensureCtx() {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  }
+  function tone(midi, peak) {
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "triangle";
+    osc.frequency.value = freqFromMidi(midi);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(peak, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.95);
+  }
   function play(pc) {
     if (!soundOn) return;
+    try { ensureCtx(); tone(midiFor(pc), 0.25); } catch (e) { /* no audio */ }
+  }
+  function playChord(pc) {
+    // triad on the clicked note; lower per-voice gain so three don't clip
+    if (!soundOn) return;
     try {
-      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === "suspended") audioCtx.resume();
-      const t = audioCtx.currentTime;
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = "triangle";
-      osc.frequency.value = freqFor(pc);
-      gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
-      osc.connect(gain).connect(audioCtx.destination);
-      osc.start(t);
-      osc.stop(t + 0.95);
-    } catch (e) { /* audio not available */ }
+      ensureCtx();
+      const base = midiFor(pc);
+      TRIADS[quality].forEach((o) => tone(base + o, 0.16));
+    } catch (e) { /* no audio */ }
   }
 
   // polar -> cartesian, clock angle in degrees (0 = top, clockwise)
@@ -334,7 +362,7 @@
       let pending = null;
       g.addEventListener("click", () => {
         if (pending) return;
-        pending = setTimeout(() => { pending = null; play(i); }, TAP_GRACE);
+        pending = setTimeout(() => { pending = null; hit(i); }, TAP_GRACE);
       });
       g.addEventListener("dblclick", (e) => {
         e.preventDefault();
@@ -344,9 +372,20 @@
       g.addEventListener("keydown", (e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
         e.preventDefault();
-        if (e.shiftKey) setRoot(); else play(i);
+        if (e.shiftKey) setRoot(); else hit(i);
       });
     }
+
+    burstLayer = document.createElementNS(SVGNS, "g");
+    burstLayer.setAttribute("id", "burst");   // added last -> floats above notes
+    svg.appendChild(burstLayer);
+  }
+
+  // a single tap either sounds one note, or — in chord view — sounds the
+  // triad on that note and blooms its three tones outward from the centre.
+  function hit(i) {
+    if (chordView) { playChord(i); chordBurst(i); }
+    else play(i);
   }
 
   // --- spin animation ---------------------------------------------------
@@ -376,6 +415,48 @@
     toRot = currentRot + delta;
     startT = performance.now();
     if (!animating) { animating = true; requestAnimationFrame(frame); }
+  }
+
+  // --- chord bloom ------------------------------------------------------
+  // three circles open outward from the centre and land on the triad tones,
+  // then fade. A note at pitch class pc appears on-screen at slot angle
+  // pc*30 (clockwise from top) plus the ring's current rotation.
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+  const DUR_BLOOM = 650;
+  function chordBurst(i) {
+    while (burstLayer.firstChild) burstLayer.removeChild(burstLayer.firstChild);
+
+    const nm = names();
+    const dots = TRIADS[quality].map((o) => {
+      const pc = (i + o) % 12;
+      const [tx, ty] = polar(R, pc * 30 + currentRot);
+      const g = document.createElementNS(SVGNS, "g");
+      g.setAttribute("class", "burst-dot" + (o === 0 ? " chord-root" : ""));
+      const c = document.createElementNS(SVGNS, "circle");
+      c.setAttribute("r", "26");
+      const label = document.createElementNS(SVGNS, "text");
+      label.setAttribute("text-anchor", "middle");
+      label.setAttribute("y", "5");
+      label.textContent = nm[pc];
+      g.appendChild(c); g.appendChild(label);
+      burstLayer.appendChild(g);
+      return { g, tx, ty };
+    });
+
+    const start = performance.now();
+    (function step(now) {
+      const t = Math.min(1, (now - start) / DUR_BLOOM);
+      const e = easeOut(t);
+      const scale = 0.2 + 0.8 * e;
+      const fade = t < 0.65 ? 1 : 1 - (t - 0.65) / 0.35;
+      dots.forEach(({ g, tx, ty }) => {
+        g.setAttribute("transform",
+          `translate(${(tx * e).toFixed(2)},${(ty * e).toFixed(2)}) scale(${scale.toFixed(3)})`);
+        g.setAttribute("opacity", fade.toFixed(3));
+      });
+      if (t < 1) requestAnimationFrame(step);
+      else while (burstLayer.firstChild) burstLayer.removeChild(burstLayer.firstChild);
+    })(start);
   }
 
   // silent visual cue that a note has become the new centre. update() rewrites
@@ -416,12 +497,25 @@
   minBtn.addEventListener("click", () => setQuality("minor"));
   majBtn.addEventListener("click", () => setQuality("major"));
 
-  // 'm' toggles between major and minor. Ignore while typing in the dropdown.
+  function setChordView(on) {
+    chordView = on;
+    chordBtn.classList.toggle("active", chordView);
+    chordBtn.setAttribute("aria-pressed", String(chordView));
+    if (!chordView && burstLayer) {
+      while (burstLayer.firstChild) burstLayer.removeChild(burstLayer.firstChild);
+    }
+  }
+  chordBtn.addEventListener("click", () => setChordView(!chordView));
+
+  // 'm' toggles major/minor, 'c' toggles chord view. Ignore while typing.
   document.addEventListener("keydown", (e) => {
     if (e.target === rootSelect || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "m" || e.key === "M") {
       e.preventDefault();
       setQuality(quality === "minor" ? "major" : "minor");
+    } else if (e.key === "c" || e.key === "C") {
+      e.preventDefault();
+      setChordView(!chordView);
     }
   });
 
