@@ -77,14 +77,10 @@
 
   .note:hover .disc { stroke: var(--accent); }
 
-  /* notes belonging to the current scale glow softly */
-  .note.in-scale .disc {
-    fill: #223018;
-    stroke: #a9d18a;
-    stroke-width: 2;
-  }
-  .note.in-scale .name { fill: #eaf6e2; }
-  .note.in-scale .ivl  { fill: #9fca86; }
+  /* notes belonging to the current scale glow softly — fill and border
+     stay put; only a faint halo and brighter text mark them */
+  .note.in-scale .disc { filter: drop-shadow(0 0 5px rgba(169, 209, 138, 0.55)); }
+  .note.in-scale .name { fill: #d7ecc9; }
 
   .note.root .disc { fill: var(--accent); stroke: var(--accent); }
   .note.root .name { fill: #1a1200; }
