@@ -45,11 +45,46 @@
     stroke: var(--ring);
     stroke-width: 1.5;
     transition: fill 0.2s;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .note .halo {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    opacity: 0;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  /* re-centering flourish: the disc pops while a ring ripples outward */
+  .note.centering .disc { animation: pop 480ms ease-out; }
+  .note.centering .halo { animation: ripple 620ms ease-out; }
+  @keyframes pop {
+    0%   { transform: scale(1); }
+    35%  { transform: scale(1.22); }
+    100% { transform: scale(1); }
+  }
+  @keyframes ripple {
+    0%   { opacity: 0.9; transform: scale(1); }
+    100% { opacity: 0;   transform: scale(2.1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .note.centering .disc, .note.centering .halo { animation: none; }
   }
   .note .name { fill: var(--ink); font-weight: 600; font-size: 15px; }
   .note .ivl  { fill: var(--muted); font-size: 9px; letter-spacing: 0.03em; }
 
   .note:hover .disc { stroke: var(--accent); }
+
+  /* notes belonging to the current scale glow softly */
+  .note.in-scale .disc {
+    fill: #223018;
+    stroke: #a9d18a;
+    stroke-width: 2;
+  }
+  .note.in-scale .name { fill: #eaf6e2; }
+  .note.in-scale .ivl  { fill: #9fca86; }
 
   .note.root .disc { fill: var(--accent); stroke: var(--accent); }
   .note.root .name { fill: #1a1200; }
@@ -63,6 +98,7 @@
   }
   .center .label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.15em; }
   .center .root  { font-size: 2.4rem; font-weight: 700; color: var(--accent); line-height: 1; }
+  .center .quality { color: var(--muted); font-size: 0.8rem; letter-spacing: 0.14em; text-transform: uppercase; margin-top: 4px; }
 
   .controls { margin-top: 28px; display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
   select, button {
@@ -77,6 +113,12 @@
   }
   select:hover, button:hover { border-color: var(--accent); }
   label.ctl { color: var(--muted); font-size: 0.9rem; }
+  kbd { background: var(--panel); border: 1px solid var(--ring); border-radius: 4px; padding: 0 5px; font-family: inherit; font-size: 0.85em; }
+  .qtoggle { display: inline-flex; border: 1px solid var(--ring); border-radius: 8px; overflow: hidden; }
+  .qtoggle button { border: none; border-radius: 0; padding: 9px 14px; }
+  .qtoggle button + button { border-left: 1px solid var(--ring); }
+  .qtoggle button.active { background: var(--accent); color: #1a1200; }
+  .qtoggle button.active:hover { border-color: var(--ring); }
   .toggle input { accent-color: var(--accent); }
   footer { margin-top: 40px; color: var(--muted); font-size: 0.8rem; }
 </style>
@@ -84,19 +126,24 @@
 <body>
 <div class="wrap">
   <h1>Chromatic Circle</h1>
-  <p class="sub">Twelve semitones. Tap a note to hear it above the root; double-tap to make it the new root.</p>
+  <p class="sub">Twelve semitones. Tap a note to hear it above the root; double-tap to make it the new root. Press <kbd>m</kbd> for minor, <kbd>M</kbd> for major.</p>
 
   <div class="stage">
     <svg id="circle" viewBox="-160 -160 320 320" aria-label="Chromatic circle"></svg>
     <div class="center">
       <span class="label">Root</span>
       <span class="root" id="rootDisplay">C</span>
+      <span class="quality" id="qualityDisplay">major</span>
     </div>
   </div>
 
   <div class="controls">
     <label class="ctl" for="rootSelect">Root</label>
     <select id="rootSelect"></select>
+    <div class="qtoggle" role="group" aria-label="Scale quality">
+      <button id="minBtn" data-q="minor">minor</button>
+      <button id="majBtn" data-q="major">major</button>
+    </div>
     <label class="ctl toggle"><input type="checkbox" id="soundToggle" checked> Sound</label>
     <button id="flatsBtn">♭ Flats</button>
   </div>
@@ -119,13 +166,23 @@
     { label: "7ths", slots: [10, 11], color: "#ff7ba6" },
   ];
 
+  // semitone offsets from the root for each scale quality
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11],   // R 2 3 4 5 6 7
+    minor: [0, 2, 3, 5, 7, 8, 10],   // R 2 ♭3 4 5 ♭6 ♭7 (natural minor)
+  };
+
   let useFlats = false;
   let root = 0;             // 0..11, index of root pitch class
+  let quality = "major";    // "major" | "minor"; there is always one
   let soundOn = true;
 
   const svg = document.getElementById("circle");
   const rootDisplay = document.getElementById("rootDisplay");
+  const qualityDisplay = document.getElementById("qualityDisplay");
   const rootSelect = document.getElementById("rootSelect");
+  const minBtn = document.getElementById("minBtn");
+  const majBtn = document.getElementById("majBtn");
   const SVGNS = "http://www.w3.org/2000/svg";
   const R = 118;            // radius of note ring
   const TAP_GRACE = 250;    // ms a single tap waits to see if a double follows
@@ -244,6 +301,11 @@
       // inner group counter-rotates against the ring so labels stay upright
       const content = document.createElementNS(SVGNS, "g");
 
+      const halo = document.createElementNS(SVGNS, "circle");
+      halo.setAttribute("class", "halo");
+      halo.setAttribute("r", "26");
+      content.appendChild(halo);
+
       const disc = document.createElementNS(SVGNS, "circle");
       disc.setAttribute("class", "disc");
       disc.setAttribute("r", "26");
@@ -269,7 +331,7 @@
       nameTexts[i] = name;
       ivlTexts[i] = ivl;
 
-      const setRoot = () => { root = i; update(); play(i); };
+      const setRoot = () => { root = i; update(); flourish(i); };
 
       // single tap sounds the note above the centre; double tap re-centres.
       // the click is held back briefly so a double tap doesn't also sound it.
@@ -320,23 +382,52 @@
     if (!animating) { animating = true; requestAnimationFrame(frame); }
   }
 
+  // silent visual cue that a note has become the new centre. update() rewrites
+  // the class attribute, so this must run after it; the reflow restarts the
+  // animation when the same note is re-centred.
+  function flourish(i) {
+    const g = noteGroups[i];
+    g.classList.remove("centering");
+    void g.getBoundingClientRect();
+    g.classList.add("centering");
+  }
+
   function update() {
     const nm = names();
+    const scale = SCALES[quality];
     for (let i = 0; i < 12; i++) {
-      const interval = INTERVALS[(i - root + 12) % 12];
+      const rel = (i - root + 12) % 12;
+      const interval = INTERVALS[rel];
+      const inScale = scale.includes(rel);
       nameTexts[i].textContent = nm[i];
       ivlTexts[i].textContent = interval;
-      noteGroups[i].setAttribute("class", "note" + (i === root ? " root" : ""));
+      noteGroups[i].setAttribute("class",
+        "note" + (i === root ? " root" : inScale ? " in-scale" : ""));
       noteGroups[i].setAttribute("aria-label",
-        nm[i] + ", interval " + interval + (i === root ? " (root)" : "") +
+        nm[i] + ", interval " + interval +
+        (i === root ? " (root)" : inScale ? " (in " + quality + " scale)" : "") +
         ". Enter to play, shift+Enter to set as root.");
     }
     rootDisplay.textContent = nm[root];
+    qualityDisplay.textContent = quality;
+    minBtn.classList.toggle("active", quality === "minor");
+    majBtn.classList.toggle("active", quality === "major");
     rootSelect.value = root;
     spinRootToTop();
   }
 
-  rootSelect.addEventListener("change", () => { root = +rootSelect.value; update(); play(root); });
+  function setQuality(q) { if (q !== quality) { quality = q; update(); } }
+  minBtn.addEventListener("click", () => setQuality("minor"));
+  majBtn.addEventListener("click", () => setQuality("major"));
+
+  // 'm' -> minor, 'M' (shift) -> major. Ignore while typing in the dropdown.
+  document.addEventListener("keydown", (e) => {
+    if (e.target === rootSelect || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "m") { e.preventDefault(); setQuality("minor"); }
+    else if (e.key === "M") { e.preventDefault(); setQuality("major"); }
+  });
+
+  rootSelect.addEventListener("change", () => { root = +rootSelect.value; update(); flourish(root); });
   document.getElementById("soundToggle").addEventListener("change", (e) => { soundOn = e.target.checked; });
   document.getElementById("flatsBtn").addEventListener("click", () => {
     useFlats = !useFlats;
