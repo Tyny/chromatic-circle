@@ -115,7 +115,20 @@
   .qtoggle button + button { border-left: 1px solid var(--ring); }
   .qtoggle button.active { background: var(--accent); color: #1a1200; }
   .qtoggle button.active:hover { border-color: var(--ring); }
-  #chordBtn.active { background: var(--accent); color: #1a1200; border-color: var(--accent); }
+  #chordBtn.active, #tempoBtn.active { background: var(--accent); color: #1a1200; border-color: var(--accent); }
+
+  .tempo { margin-top: 18px; display: flex; justify-content: center; }
+  .tap-pad {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    width: 200px; padding: 16px; border-radius: 12px;
+    background: var(--panel); border: 1px solid var(--ring); color: var(--ink);
+    cursor: pointer; user-select: none; touch-action: manipulation;
+    transition: border-color 0.15s, background 0.05s, transform 0.05s;
+  }
+  .tap-pad:hover { border-color: var(--accent); }
+  .tap-pad .tap-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--muted); }
+  .tap-pad .tap-bpm { font-size: 1.6rem; font-weight: 700; color: var(--accent); }
+  .tap-pad.beat { background: #2a2118; border-color: var(--accent); transform: scale(0.98); }
 
   /* chord-bloom dots (circle centred on the group's local origin) */
   .burst-dot circle { fill: var(--accent); stroke: none; filter: drop-shadow(0 0 6px rgba(255, 180, 84, 0.6)); }
@@ -128,7 +141,7 @@
 <body>
 <div class="wrap">
   <h1>Chromatic Circle</h1>
-  <p class="sub">Twelve semitones. Tap a note to hear it above the root; double-tap to make it the new root. Press <kbd>m</kbd> for major/minor, <kbd>c</kbd> for chords.</p>
+  <p class="sub">Twelve semitones. Tap a note to hear it above the root; double-tap to make it the new root. Press <kbd>m</kbd> for major/minor, <kbd>c</kbd> for chords, <kbd>t</kbd> for tempo.</p>
 
   <div class="stage">
     <svg id="circle" viewBox="-160 -160 320 320" aria-label="Chromatic circle"></svg>
@@ -147,8 +160,16 @@
       <button id="majBtn" data-q="major">major</button>
     </div>
     <button id="chordBtn" aria-pressed="false">Chords</button>
+    <button id="tempoBtn" aria-pressed="false">Tempo</button>
     <label class="ctl toggle"><input type="checkbox" id="soundToggle" checked> Sound</label>
     <button id="flatsBtn">♭ Flats</button>
+  </div>
+
+  <div class="tempo" id="tempoPad" hidden>
+    <button id="tapPad" class="tap-pad" aria-label="Tap to set tempo">
+      <span class="tap-label">Tap tempo</span>
+      <span class="tap-bpm" id="bpmDisplay">— BPM</span>
+    </button>
   </div>
 
   <footer>Shaded bands group the interval families — 2nds, 3rds, 6ths, 7ths (each a minor/major pair). The root, perfect 4th &amp; 5th and tritone are left unshaded.</footer>
@@ -184,7 +205,16 @@
   let root = 0;             // 0..11, index of root pitch class
   let quality = "major";    // "major" | "minor"; there is always one
   let chordView = false;    // click plays a triad + blooms its 3 tones
+  let tempoMode = false;    // reveals the tap pad and runs a beat clock
   let soundOn = true;
+
+  // tap-tempo + beat clock
+  let tapTimes = [];        // recent tap timestamps (ms)
+  let beatPeriod = null;    // ms per beat, once at least two taps are in
+  let beatOrigin = 0;       // phase anchor = time of the last tap
+  let beatRAF = null;       // active beat-loop rAF handle
+  let lastBeatIndex = -1;   // last beat index we fired on
+  let activeChord = null;   // pitch class currently looping on the beat
 
   const svg = document.getElementById("circle");
   const rootDisplay = document.getElementById("rootDisplay");
@@ -193,6 +223,10 @@
   const minBtn = document.getElementById("minBtn");
   const majBtn = document.getElementById("majBtn");
   const chordBtn = document.getElementById("chordBtn");
+  const tempoBtn = document.getElementById("tempoBtn");
+  const tempoPad = document.getElementById("tempoPad");
+  const tapPad = document.getElementById("tapPad");
+  const bpmDisplay = document.getElementById("bpmDisplay");
   const SVGNS = "http://www.w3.org/2000/svg";
   const R = 118;            // radius of note ring
   const TAP_GRACE = 250;    // ms a single tap waits to see if a double follows
@@ -383,7 +417,9 @@
 
   // a single tap either sounds one note, or — in chord view — sounds the
   // triad on that note and blooms its three tones outward from the centre.
+  // With tempo running too, it instead arms that chord to loop on the beat.
   function hit(i) {
+    if (tempoMode && chordView && beatPeriod) { activeChord = i; return; }
     if (chordView) { playChord(i); chordBurst(i); }
     else play(i);
   }
@@ -423,8 +459,11 @@
   // pc*30 (clockwise from top) plus the ring's current rotation.
   const easeOut = (t) => 1 - Math.pow(1 - t, 3);
   const DUR_BLOOM = 650;
+  function clearBurst() {
+    while (burstLayer && burstLayer.firstChild) burstLayer.removeChild(burstLayer.firstChild);
+  }
   function chordBurst(i) {
-    while (burstLayer.firstChild) burstLayer.removeChild(burstLayer.firstChild);
+    clearBurst();
 
     const nm = names();
     const dots = TRIADS[quality].map((o) => {
@@ -455,9 +494,66 @@
         g.setAttribute("opacity", fade.toFixed(3));
       });
       if (t < 1) requestAnimationFrame(step);
-      else while (burstLayer.firstChild) burstLayer.removeChild(burstLayer.firstChild);
+      else clearBurst();
     })(start);
   }
+
+  // --- tap tempo + beat clock -------------------------------------------
+  function registerTap() {
+    const now = performance.now();
+    // a long gap means a fresh count-in, not a continuation
+    if (tapTimes.length && now - tapTimes[tapTimes.length - 1] > 2000) tapTimes = [];
+    tapTimes.push(now);
+    if (tapTimes.length > 5) tapTimes.shift();
+
+    if (tapTimes.length >= 2) {
+      let sum = 0;
+      for (let k = 1; k < tapTimes.length; k++) sum += tapTimes[k] - tapTimes[k - 1];
+      beatPeriod = sum / (tapTimes.length - 1);
+      beatOrigin = now;                 // phase follows the last tap
+      lastBeatIndex = 0;
+      bpmDisplay.textContent = Math.round(60000 / beatPeriod) + " BPM";
+      if (tempoMode && !beatRAF) beatRAF = requestAnimationFrame(beatLoop);
+    }
+    pulsePad();
+  }
+
+  function beatLoop() {
+    if (!tempoMode || !beatPeriod) { beatRAF = null; return; }
+    const idx = Math.floor((performance.now() - beatOrigin) / beatPeriod);
+    if (idx !== lastBeatIndex) { lastBeatIndex = idx; onBeat(); }
+    beatRAF = requestAnimationFrame(beatLoop);
+  }
+
+  function onBeat() {
+    pulsePad();
+    if (chordView && activeChord != null) { playChord(activeChord); chordBurst(activeChord); }
+  }
+
+  function pulsePad() {
+    tapPad.classList.remove("beat");
+    void tapPad.getBoundingClientRect();   // reflow so re-adding restarts it
+    tapPad.classList.add("beat");
+  }
+
+  function setTempoMode(on) {
+    tempoMode = on;
+    tempoBtn.classList.toggle("active", on);
+    tempoBtn.setAttribute("aria-pressed", String(on));
+    tempoPad.hidden = !on;
+    if (on) {
+      if (beatPeriod) {
+        lastBeatIndex = Math.floor((performance.now() - beatOrigin) / beatPeriod);
+        if (!beatRAF) beatRAF = requestAnimationFrame(beatLoop);
+      }
+    } else {
+      if (beatRAF) { cancelAnimationFrame(beatRAF); beatRAF = null; }
+      activeChord = null;
+      clearBurst();
+    }
+  }
+
+  tapPad.addEventListener("click", registerTap);
 
   // silent visual cue that a note has become the new centre. update() rewrites
   // the class attribute, so this must run after it; the reflow restarts the
@@ -501,21 +597,24 @@
     chordView = on;
     chordBtn.classList.toggle("active", chordView);
     chordBtn.setAttribute("aria-pressed", String(chordView));
-    if (!chordView && burstLayer) {
-      while (burstLayer.firstChild) burstLayer.removeChild(burstLayer.firstChild);
-    }
+    if (!chordView) { activeChord = null; clearBurst(); }
   }
   chordBtn.addEventListener("click", () => setChordView(!chordView));
+  tempoBtn.addEventListener("click", () => setTempoMode(!tempoMode));
 
-  // 'm' toggles major/minor, 'c' toggles chord view. Ignore while typing.
+  // 'm' major/minor, 'c' chord view, 't' tempo mode. Ignore while typing.
   document.addEventListener("keydown", (e) => {
-    if (e.target === rootSelect || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target === rootSelect || e.target === tapPad ||
+        e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "m" || e.key === "M") {
       e.preventDefault();
       setQuality(quality === "minor" ? "major" : "minor");
     } else if (e.key === "c" || e.key === "C") {
       e.preventDefault();
       setChordView(!chordView);
+    } else if (e.key === "t" || e.key === "T") {
+      e.preventDefault();
+      setTempoMode(!tempoMode);
     }
   });
 
